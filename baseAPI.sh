@@ -8,12 +8,46 @@
 ##########################################################################################
 
 # Stop if already executed.
-if [ $is_base_loaded ]; then
+if [[ $IS_BASE_LOADED == true ]]; then
   ui_log 3 "Base API has already been loaded."
+  ui_log
   return
 fi
 
-is_base_loaded=true
+IS_BASE_LOADED=true
+
+######################
+# Temporary Directory
+######################
+
+THUMB_TMP=/data/local/tmp/thumb-up
+
+# Set up.
+mkdir -p $THUMB_TMP
+
+##########
+# Busybox
+##########
+
+BUSYBOX_DIR=$THUMB_TMP/busybox
+
+# Yeah, ensure busybox.
+# Mostly copy from Magisk util_functions.sh file.
+ensure_busybox() {
+  if [ -x $THUMB_TMP/busybox/busybox ]; then
+    [ -z $BUSYBOX_DIR ] && BUSYBOX_DIR=$THUMB_TMP/busybox
+  else
+    # Construct the PATH
+    [ -z $BUSYBOX_DIR ] && BUSYBOX_DIR=$THUMB_TMP/busybox
+    mkdir -p $BUSYBOX_DIR
+    cp ./busybox $BUSYBOX_DIR/
+    chmod 755 $BUSYBOX_DIR/*
+    $BUSYBOX_DIR/busybox --install -s $BUSYBOX_DIR
+  fi
+  echo $PATH | grep -q "^$BUSYBOX_DIR" || export PATH=$BUSYBOX_DIR:$PATH
+}
+
+ensure_busybox
 
 #########
 # Logger
@@ -21,6 +55,7 @@ is_base_loaded=true
 
 # Default log level.
 LOG_LEVEL=0
+OUTPUT_FILE=
 
 NOCOLOR='\033[0m'
 RED='\033[0;31m'
@@ -39,10 +74,31 @@ LIGHTPURPLE='\033[1;35m'
 LIGHTCYAN='\033[1;36m'
 WHITE='\033[1;37m'
 
+LOG_TEXT=""
+LOG_TEXT_FIXES=("$NOCOLOR" "$NOCOLOR\n")
+LOG_UI_ENABLED=true
+
 ui_log()
 {
-  if [[ $1 -le $LOG_LEVEL ]]; then
-    echo -e "${NOCOLOR}$2${NOCOLOR}"
+  if [ ! -z $1 ]; then
+    if [ "$1" == "clear" ]; then
+      if [ "$OUTPUT_FILE" != "" ]; then
+        echo -n "" > ./$OUTPUT_FILE
+      fi
+      clear
+    elif [ "$1" == "cancel" ]; then
+      LOG_TEXT=""
+    elif [ $1 -le $LOG_LEVEL ]; then
+      LOG_TEXT+="${LOG_TEXT_FIXES[0]}${2}${LOG_TEXT_FIXES[1]}"
+    fi
+  else
+    if [ ! -z $OUTPUT_FILE ]; then
+      echo -e -n "$LOG_TEXT" >> ./$OUTPUT_FILE
+    fi
+    if [[ $LOG_UI_ENABLED == true ]]; then
+      echo -e -n "$LOG_TEXT"
+    fi
+    LOG_TEXT=""
   fi
 }
 
@@ -62,8 +118,23 @@ line_buffer()
 #########################
 
 # Default.
-MIN_THUMB_AREA=145
-MIN_MOVED_DISTANCE=160
+TOUCH_EVENT_PATH=
+EVENT_WIDTH=0
+EVENT_HEIGHT=0
+SCREEN_WIDTH=0
+SCREEN_HEIGHT=0
+MIN_THUMB_AREA=160
+MIN_MOVED_DISTANCE=110
+ENABLE_REL_TOUCH_PART=true
+DRIVER_TYPE="39-ff"
+on_service_start()
+{
+  :
+}
+on_service_end()
+{
+  :
+}
 on_touch_start()
 {
   :
@@ -72,14 +143,31 @@ on_touch_change()
 {
   :
 }
-on_touch_end ()
+on_touch_end()
+{
+  :
+}
+on_thumb_change()
+{
+  :
+}
+on_moved_change()
+{
+  :
+}
+on_gesture_change_normal()
+{
+  :
+}
+on_gesture_change_thumb()
 {
   :
 }
 
 # Event trends.
-IS_JUST_STARTED=false
-IS_JUST_ENDED=false
+# 1: Impossible, 2: Probably, 3: Definitely
+TRENDS_JUST_STARTED=1
+TRENDS_JUST_ENDED=1
 
 # Absolute touch info.
 START_POSITION=(0 0)
@@ -109,6 +197,63 @@ DIRECTIONS_THUMB=()
 
 touch_status_update()
 {
+  # Mark running service.
+  echo -n "$BASHPID" > ./process-id
+
+  on_service_start
+
+  handle_x()
+  {
+    local SCREEN_VALUE=$(( $EVENT_VALUE * $SCREEN_WIDTH / $EVENT_WIDTH ))
+
+    if [ $TRENDS_JUST_STARTED -eq 3 ]; then
+      START_POSITION[0]=$SCREEN_VALUE
+    fi
+
+    POSITION[0]=$SCREEN_VALUE
+    DISPLACEMENT[0]=$[${POSITION[0]} - ${START_POSITION[0]}]
+  }
+
+  handle_y()
+  {
+    local SCREEN_VALUE=$(( $EVENT_VALUE * $SCREEN_HEIGHT / $EVENT_HEIGHT ))
+
+    if [ $TRENDS_JUST_STARTED -eq 3 ]; then
+      START_POSITION[1]=$SCREEN_VALUE
+    fi
+
+    POSITION[1]=$SCREEN_VALUE
+    DISPLACEMENT[1]=$[${POSITION[1]} - ${START_POSITION[1]}]
+  }
+  
+  handle_size()
+  {
+    if [ $AREA_MAX -lt $EVENT_VALUE ]; then
+      AREA_MAX=$EVENT_VALUE
+    fi
+  }
+  
+  handle_just_start()
+  {
+    TRENDS_JUST_STARTED=3
+
+    AREA_MAX=0
+    DISTANCE=0
+
+    IS_THUMB=false
+    IS_MOVED=false
+
+    DIRECTIONS_NORMAL=()
+    DIRECTIONS_THUMB=()
+
+    screen_orientation_update
+  }
+  
+  handle_just_end()
+  {
+    TRENDS_JUST_ENDED=3
+  }
+
   while read EVENT; do
     local EVENT_TYPE=${EVENT:33:4}
     local EVENT_VALUE=$((16#${EVENT:38:4}))
@@ -118,64 +263,28 @@ touch_status_update()
     case $EVENT_TYPE in
       # X
       0035)
-        if [ $IS_JUST_STARTED == true ]; then
-          START_POSITION[0]=$EVENT_VALUE
-        fi
-
-        POSITION[0]=$EVENT_VALUE
-        DISPLACEMENT[0]=$[${POSITION[0]} - ${START_POSITION[0]}]
+        handle_x
         ;;
       # Y
       0036)
-        if [ $IS_JUST_STARTED == true ]; then
-          START_POSITION[1]=$EVENT_VALUE
-        fi
-
-        POSITION[1]=$EVENT_VALUE
-        DISPLACEMENT[1]=$[${POSITION[1]} - ${START_POSITION[1]}]
+        handle_y
         ;;
       # Size or Pressure
       003a)
-        if [ $AREA_MAX -lt $EVENT_VALUE ]; then
-          AREA_MAX=$EVENT_VALUE
-        fi
-        ;;
-      # Start and End
-      0039)
-        if [ $EVENT_VALUE != "65535" ]; then
-          IS_JUST_STARTED=true
-
-          AREA_MAX=0
-          DISTANCE=0
-
-          IS_THUMB=false
-          IS_MOVED=false
-
-          DIRECTIONS_NORMAL=()
-          DIRECTIONS_THUMB=()
-
-          screen_orientation_update
-
-        else
-          IS_JUST_ENDED=true
-
-          thumb_judge
-          moved_judge
-
-        fi
+        handle_size
         ;;
       # Division Line
       0000)
-        if [ $IS_JUST_STARTED == true ]; then
+        if [ $TRENDS_JUST_STARTED -eq 3 ]; then
           # Touch started.
-          IS_JUST_STARTED=false
+          TRENDS_JUST_STARTED=1
 
           # Call other stuff.
           on_touch_start
 
-        elif [ $IS_JUST_ENDED == true ]; then
+        elif [ $TRENDS_JUST_ENDED -eq 3 ]; then
           # Touch ended.
-          IS_JUST_ENDED=false
+          TRENDS_JUST_ENDED=1
 
           # Call other stuff.
           on_touch_end
@@ -186,8 +295,46 @@ touch_status_update()
           distance_update
           direction_update
 
+          thumb_judge
+          moved_judge
+
           # Call other stuff.
           on_touch_change
+
+        fi
+        ;;
+      *)
+        if [ "$DRIVER_TYPE" == "39-ff" ]; then
+
+          if [ "$EVENT_TYPE" == "0039" ]; then
+            # Start or End
+            if [ $EVENT_VALUE != "65535" ]; then
+              handle_just_start
+            else
+              handle_just_end
+            fi
+          fi
+
+        elif [ "$DRIVER_TYPE" == "39-0202" ]; then
+
+          case $EVENT_TYPE in
+            # Start
+            0039)
+              if [ $TRENDS_JUST_ENDED -eq 1 ]; then
+                handle_just_start
+              elif [ $TRENDS_JUST_ENDED -eq 2 ]; then
+                TRENDS_JUST_ENDED=1
+              fi
+              ;;
+            # End, probably
+            0002)
+              if [ $TRENDS_JUST_ENDED -eq 1 ]; then
+                TRENDS_JUST_ENDED=2
+              elif [ $TRENDS_JUST_ENDED -eq 2 ]; then
+                handle_just_end
+              fi
+              ;;
+          esac
 
         fi
         ;;
@@ -200,17 +347,22 @@ thumb_judge()
 {
   if [ $AREA_MAX -gt $MIN_THUMB_AREA ]; then
     IS_THUMB=true
-  else
-    IS_THUMB=false
+    on_thumb_change
   fi
 }
 
 moved_judge()
 {
+  local PRE_IS_MOVED=$IS_MOVED
+
   if [ $DISTANCE -gt $MIN_MOVED_DISTANCE ]; then
     IS_MOVED=true
   else
     IS_MOVED=false
+  fi
+
+  if [ $PRE_IS_MOVED != $IS_MOVED ]; then
+    on_moved_change
   fi
 }
 
@@ -259,8 +411,12 @@ rel_info_update()
   esac
   # echo "-${REL_DISPLACEMENT[*]} +${REL_DISPLACEMENT[*]}"
 
-  if [ $REL_START_POSITION_X -lt $(($REL_SCREEN_WIDTH / 2)) ]; then
-    REL_TOUCH_PART="left"
+  if [[ $ENABLE_REL_TOUCH_PART == true ]]; then
+    if [ $REL_START_POSITION_X -lt $(($REL_SCREEN_WIDTH / 2)) ]; then
+      REL_TOUCH_PART="left"
+    else
+      REL_TOUCH_PART="right"
+    fi
   else
     REL_TOUCH_PART="right"
   fi
@@ -306,10 +462,12 @@ direction_update()
 
     if [[ ${DIRECTIONS_NORMAL[@]: -1} != $CUR_DIRECTION_NORMAL ]]; then
       DIRECTIONS_NORMAL+=($CUR_DIRECTION_NORMAL)
+      on_gesture_change_normal
     fi
 
     if [[ ${DIRECTIONS_THUMB[@]: -1} != $CUR_DIRECTION_THUMB ]]; then
       DIRECTIONS_THUMB+=($CUR_DIRECTION_THUMB)
+      on_gesture_change_thumb
     fi
 
   fi
@@ -319,4 +477,29 @@ screen_orientation_update()
 {
   SCREEN_ORIENTATION="$(dumpsys input | grep 'SurfaceOrientation' | awk '{ print $2 }')"
 }
+
+#################
+# Service Toggle
+#################
+
+start_service()
+{
+  # Stop previous process.
+  end_service
+
+  # Gain touch event stream by hexdump.
+  line_buffer hexdump $TOUCH_EVENT_PATH | touch_status_update
+}
+
+end_service()
+{
+  local RUNNING_PID="$(cat ./process-id)"
+  if [ ! -z $RUNNING_PID ]; then
+    on_service_end
+
+    echo -n "" > ./process-id
+    kill $RUNNING_PID &
+  fi
+}
+
 

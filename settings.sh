@@ -7,13 +7,22 @@
 #
 ########################################################################
 
+###################################
 # Device and Finger dependent Info
-MIN_THUMB_AREA=145
-MIN_MOVED_DISTANCE=160
+###################################
+
+MIN_THUMB_AREA=165
+MIN_MOVED_DISTANCE=110
+ENABLE_REL_TOUCH_PART=true
 
 TOUCH_EVENT_PATH=/dev/input/event0
-SCREEN_WIDTH=3072
-SCREEN_HEIGHT=2304
+
+# touch positions reported by the touch events differs between the screen hardware positions.
+EVENT_WIDTH=3072
+EVENT_HEIGHT=2304
+
+SCREEN_WIDTH=1536
+SCREEN_HEIGHT=2048
 
 # Determine info of what importance should be logcat.
 # An info of number N means M:
@@ -54,12 +63,12 @@ on_touch_end()
   local IFS="-"
 
   # echo "+${DIRECTIONS_THUMB[*]}"
-  if [ $IS_MOVED == true ]; then
-    if [ $IS_THUMB == true ]; then
+  if [[ $IS_MOVED == true ]]; then
+    if [[ $IS_THUMB == true ]]; then
       case "${DIRECTIONS_THUMB[*]}" in
-        sideup) navigation_back;;
-        sidedown) navigation_home;;
-        centerdown) navigation_recents;;
+        sideup) navigation_back_alpha;;
+        sidedown) navigation_home_alpha;;
+        centerdown) navigation_recents_alpha;;
         sideup-centerdown) media_next;;
         sideup-sidedown) media_play_pause;;
       esac
